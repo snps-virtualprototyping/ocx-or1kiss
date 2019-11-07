@@ -3,7 +3,7 @@
 ## Overview
 
 This is an adaptation of the [OpenRisc 1000 Core](https://github.com/janweinstock/or1kiss)
-to run as a core model using the [OpenCpuX API](https://gitsnps.internal.synopsys.com/tobies/ocx).
+to run as a core model using the [OpenCpuX API](https://github.com/snps-virtualizer/ocx).
 
 ## How to build
 
