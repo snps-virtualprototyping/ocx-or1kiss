@@ -3,7 +3,12 @@
 ## Overview
 
 This is an adaptation of the [OpenRisc 1000 Core](https://github.com/janweinstock/or1kiss)
-to run as a core model using the [OpenCpuX API](https://github.com/snps-virtualizer/ocx).
+to run as a core model using the [OpenCpuX API](https://github.com/snps-virtualprototyping/ocx).
+
+## System Requirements
+* [CMake](https://cmake.org), version 3.6 or higher
+* `gcc` and `g++`
+* `libelf`
 
 ## How to build
 
@@ -19,9 +24,10 @@ to run as a core model using the [OpenCpuX API](https://github.com/snps-virtuali
         cd BUILD
 
 * Run [CMake](https://cmake.org), then `make` to build both the test harness 
-  and the or1kiss core
+  and the or1kiss core in x64 mode:
 
-        cmake ..
+        CXX="g++ -m64" CC="gcc -m64" cmake ..               # on bash
+        set CXX="g++ -m64"; set CC="gcc -m64";  cmake ..    # on csh
         make
 
 * The module should pass the regression tests are specified by the ocx test 

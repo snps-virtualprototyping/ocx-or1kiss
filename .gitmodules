@@ -1,6 +1,6 @@
 [submodule "ocx"]
 	path = ocx
-	url = git@github.com:snps-virtualizer/ocx.git
+	url = git@github.com:snps-virtualprototyping/ocx.git
 [submodule "or1kiss"]
 	path = or1kiss
 	url = https://github.com/janweinstock/or1kiss.git
