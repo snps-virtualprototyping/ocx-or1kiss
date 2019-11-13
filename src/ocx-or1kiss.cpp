@@ -1,7 +1,5 @@
 /******************************************************************************
- * Copyright (C) 2019 Synopsys, Inc.
- * This source code is licensed under the MIT license found in the
- * LICENSE file in the root directory of this source tree.
+ * Copyright Synopsys, licensed under the MIT license, see LICENSE for detail
  ******************************************************************************/
 
 #include <ocx/ocx.h>
@@ -94,7 +92,7 @@ public:
 
     void handle_syscall(int callno, void *arg) override;
 
-    u64 disassemble(const void *src, size_t srcsz, char *buf, size_t bufsz) override;
+    u64 disassemble(u64 addr, char *buf, size_t bufsz) override;
 
     void invalidate_page_ptrs() override;
     void invalidate_page_ptr(u64 page_addr) override;
@@ -407,17 +405,36 @@ bool core_or::trace_basic_blocks(bool on) {
     return false;
 }
 
-core_or::u64 core_or::disassemble(const void *src, size_t srcsz,
-                                  char *buf, size_t bufsz) {
+core_or::u64 core_or::disassemble(u64 addr, char *buf, size_t bufsz) {
 
-    if (srcsz >= 4) {
-        std::ostringstream os;
-        or1kiss::disassemble(os, *(u32*)src);
-        strncpy(buf, os.str().c_str(), bufsz);
-        return 4;
-    } else {
+    ERROR_ON(addr > UINT32_MAX, "code address %llu out of bounds", addr);
+
+    u64 paddr = 0;
+    if (!virt_to_phys(addr, paddr))
         return 0;
-    }
+
+    u32 insn = 0;
+    ocx::transaction tx = {
+        .addr = paddr,
+        .size = 4,
+        .data = (u8 *)&insn,
+        .is_read = true,
+        .is_user = true,
+        .is_secure = false,
+        .is_insn = true,
+        .is_excl = false,
+        .is_lock = false,
+        .is_port = false,
+        .is_debug = true
+    };
+
+    if (m_env.transport(tx) != ocx::RESP_OK)
+        return 0;
+
+    std::ostringstream os;
+    or1kiss::disassemble(os, insn);
+    strncpy(buf, os.str().c_str(), bufsz);
+    return 4;
 }
 
 inline or1kiss::response core_or::convert_response(ocx::response resp) {
@@ -455,4 +472,3 @@ namespace ocx {
         delete p    ;
     }
 }
-
