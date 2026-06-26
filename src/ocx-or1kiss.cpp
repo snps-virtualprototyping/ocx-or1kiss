@@ -33,21 +33,22 @@
 
 #define OPENRISC_PAGE_SIZE 8192
 
-class core_or : public ocx::core, or1kiss::env
+class core_or : public core, or1kiss::env,
+                public core_inv_range_extension,
+                public core_trace_insns_extension,
+                public core_trace_coverage_extension,
+                public core_mode_change_trace_extension,
+                public core_global_monitor_extension,
+                public core_reg_breakpoint_extension
 {
-public:
-    typedef ocx::u8  u8;
-    typedef ocx::u32 u32;
-    typedef ocx::u64 u64;
-
 private:
-    ocx::env&    m_env;
+    ocx20250721::ocx::env&    m_env;
     or1kiss::or1k   m_or;
     u32             m_pending_breakpoint;
     bool            m_stop_requested;
 
 public:
-    core_or(ocx::env &env);
+    core_or(ocx20250721::ocx::env &env);
     ~core_or();
 
     // or1kiss::env overrides
@@ -90,12 +91,35 @@ public:
     bool remove_watchpoint(u64 addr, u64 size, bool iswr) override;
     bool trace_basic_blocks(bool on) override;
 
-    void handle_syscall(int callno, void *arg) override;
+    bool trace_coverage_blocks(bool on) override;
+
+    bool trace_mode_changes(bool on) override;
+
+    u64* register_global_monitor(u64** mon_ptr) override;
+
+    bool add_reg_breakpoint(u64 regid, bool iswr) override;
+
+    bool remove_reg_breakpoint(u64 regid, bool iswr) override;
+
+    u64 num_ports() override;
+
+    port_direction port_dir(u64 portid) override;
+
+    const char* port_name(u64 portid) override;
+
+    response transport(const transaction& tx) override;
+
+    void tb_flush() override;
+    void tb_flush_page(u64 start, u64 end) override;
+
+    void handle_syscall(int callno, std::shared_ptr<void> arg) override;
 
     u64 disassemble(u64 addr, char *buf, size_t bufsz) override;
 
     void invalidate_page_ptrs() override;
     void invalidate_page_ptr(u64 page_addr) override;
+    void invalidate_page_ptrs(u64 start, u64 end) override;
+    bool trace_insns(bool on) override;
 
 private:
     inline bool is_breakpoint_pending() const;
@@ -103,11 +127,17 @@ private:
     void activate_pending_breakpoint();
 
     // helpers
-    static inline or1kiss::response convert_response(ocx::response resp);
+    static inline or1kiss::response convert_response(response resp);
 };
 
-core_or::core_or(ocx::env& env) :
+core_or::core_or(ocx20250721::ocx::env& env) :
+    core(),
     or1kiss::env(or1kiss::ENDIAN_LITTLE),
+    core_inv_range_extension(),
+    core_trace_insns_extension(),
+    core_trace_coverage_extension(),
+    core_global_monitor_extension(),
+    core_reg_breakpoint_extension(),
     m_env(env),
     m_or(this),
     m_pending_breakpoint(~0u),
@@ -119,17 +149,19 @@ core_or::~core_or() {
 }
 
 or1kiss::response core_or::transact(const or1kiss::request& req) {
-    ocx::transaction tx = {
+    transaction tx = {
         .addr = req.addr,
         .size = req.size,
         .data = (u8 *)req.data,
+        .space = 0,
+        .cpuid = 0,
+        .port = 0,
         .is_read = req.is_read(),
         .is_user = !req.is_supervisor(),
         .is_secure = false,
         .is_insn = !req.is_dmem(),
         .is_excl = req.is_exclusive(),
         .is_lock = false,
-        .is_port = false,
         .is_debug = req.is_debug()
     };
 
@@ -152,7 +184,7 @@ const char* core_or::provider() {
     return "or1kiss - " __DATE__;
 }
 
-void core_or::handle_syscall(int callno, void *arg) {
+void core_or::handle_syscall(int callno, std::shared_ptr<void> arg) {
     switch(callno) {
     default:
         ERROR("unknown syscall id (%d)", callno);
@@ -176,11 +208,11 @@ void core_or::activate_pending_breakpoint() {
     m_pending_breakpoint = ~0u;
 }
 
-core_or::u64 core_or::step(u64 num_insn) {
+u64 core_or::step(u64 num_insn) {
 
     using namespace or1kiss;
 
-    ERROR_ON(num_insn > UINT_MAX, "num_insn %llu out of bounds", num_insn);
+    ERROR_ON(num_insn > UINT_MAX, "num_insn %llu out of bounds", (long long unsigned)num_insn);
     u32 target_cycles = (u32)num_insn;
     u32 executed_cycles = 0;
     u32 cycles;
@@ -230,7 +262,7 @@ void core_or::stop() {
     m_stop_requested = true;
 }
 
-core_or::u64 core_or::insn_count() {
+u64 core_or::insn_count() {
     return m_or.get_num_instructions();
 }
 
@@ -239,15 +271,15 @@ void core_or::reset() {
 }
 
 void core_or::interrupt(u64 irq, bool set) {
-    ERROR_ON(irq >= INT_MAX, "irq (%llu) out of bounds", irq);
+    ERROR_ON(irq >= INT_MAX, "irq (%llu) out of bounds", (long long unsigned)irq);
     m_or.interrupt((int)irq, set);
 }
 
 void core_or::notified(u64 eventid) {
-    ERROR("unexpected notification from environment (%llu)", eventid);
+    ERROR("unexpected notification from environment (%llu)", (long long unsigned)eventid);
 }
 
-core_or::u64 core_or::page_size() {
+u64 core_or::page_size() {
     return OPENRISC_PAGE_SIZE;
 }
 
@@ -277,7 +309,7 @@ bool core_or::virt_to_phys(u64 vaddr, u64& paddr) {
 }
 
 void core_or::invalidate_page_ptr(u64 page_addr) {
-    ERROR_ON(page_addr > UINT_MAX, "page_addr (%llu) out of bounds", page_addr);
+    ERROR_ON(page_addr > UINT_MAX, "page_addr (%llu) out of bounds", (long long unsigned)page_addr);
     if (get_data_ptr((u32)page_addr) != nullptr)
         set_data_ptr(nullptr);
     if (get_insn_ptr((u32)page_addr) != nullptr)
@@ -287,20 +319,31 @@ void core_or::invalidate_page_ptr(u64 page_addr) {
 void core_or::invalidate_page_ptrs() {
     set_data_ptr(nullptr);
     set_insn_ptr(nullptr);
+
+}
+
+void core_or::invalidate_page_ptrs(u64 start, u64 end) {
+    (void)start;
+    (void)end;
+}
+
+bool core_or::trace_insns(bool on) {
+    (void)on;
+    return true;
 }
 
 void core_or::set_id(u64 procid, u64 cpuid) {
     u64 id = 8 * procid + cpuid;
-    ERROR_ON(id > UINT_MAX, "core id (%llu) out of bounds", id);
+    ERROR_ON(id > UINT_MAX, "core id (%llu) out of bounds", (long long unsigned)id);
     m_or.set_core_id((u32)id);
 }
 
-core_or::u64 core_or::num_regs() {
+u64 core_or::num_regs() {
     return 35; // 32 GPR + PPC + NPC + SR
 }
 
 bool core_or::read_reg(u64 regid, void* buf) {
-    ERROR_ON(regid >= num_regs(), "register index %llu out of bounds", regid);
+    ERROR_ON(regid >= num_regs(), "register index %llu out of bounds", (long long unsigned)regid);
     u32 val = 0;
     switch (regid) {
     case 32: val = m_or.get_spr(or1kiss::SPR_PPC, true); break;
@@ -314,7 +357,7 @@ bool core_or::read_reg(u64 regid, void* buf) {
 }
 
 bool core_or::write_reg(u64 regid, const void *buf) {
-    ERROR_ON(regid >= num_regs(), "register index %llu out of bounds", regid);
+    ERROR_ON(regid >= num_regs(), "register index %llu out of bounds", (long long unsigned)regid);
 
     u32 val = *(u32*)buf;
     switch (regid) {
@@ -331,16 +374,16 @@ size_t core_or::reg_size(u64 reg) {
     return sizeof(m_or.GPR[0]);
 }
 
-core_or::u64 core_or::pc_regid() {
+u64 core_or::pc_regid() {
     return 33;
 }
 
-core_or::u64 core_or::sp_regid() {
+u64 core_or::sp_regid() {
     return 1;
 }
 
 const char* core_or::reg_name(u64 regid) {
-    ERROR_ON(regid >= num_regs(), "register index %llu out of bounds", regid);
+    ERROR_ON(regid >= num_regs(), "register index %llu out of bounds", (long long unsigned)regid);
     switch (regid) {
     case  0: return "R0";   case  1: return "R1";
     case  2: return "R2";   case  3: return "R3";
@@ -361,27 +404,27 @@ const char* core_or::reg_name(u64 regid) {
     case 32: return "PPC";  case 33: return "NPC";
     case 34: return "SR";
     default:
-        ERROR("unexpected register index (%llu)", regid);
+        ERROR("unexpected register index (%llu)", (long long unsigned)regid);
     }
 
     return "<ERROR>";
 }
 
 bool core_or::add_breakpoint(u64 addr) {
-    ERROR_ON(addr > UINT32_MAX, "breakpoint address %llu out of bounds", addr);
+    ERROR_ON(addr > UINT32_MAX, "breakpoint address %llu out of bounds", (long long unsigned)addr);
     m_or.insert_breakpoint((u32)addr);
     return true;
 }
 
 bool core_or::remove_breakpoint(u64 addr) {
-    ERROR_ON(addr > UINT32_MAX, "breakpoint address %llu out of bounds", addr);
+    ERROR_ON(addr > UINT32_MAX, "breakpoint address %llu out of bounds", (long long unsigned)addr);
     m_or.remove_breakpoint(addr);
     return true;
 }
 
 bool core_or::add_watchpoint(u64 addr, u64 size, bool iswr) {
-    ERROR_ON(addr > UINT32_MAX, "watchpoint address %llu out of bounds", addr);
-    ERROR_ON(size > UINT32_MAX, "watchpoint size %llu out of bounds", size);
+    ERROR_ON(addr > UINT32_MAX, "watchpoint address %llu out of bounds", (long long unsigned)addr);
+    ERROR_ON(size > UINT32_MAX, "watchpoint size %llu out of bounds", (long long unsigned)size);
     if (iswr) {
         m_or.insert_watchpoint_w((u32)addr, (u32)size);
     } else {
@@ -405,30 +448,32 @@ bool core_or::trace_basic_blocks(bool on) {
     return false;
 }
 
-core_or::u64 core_or::disassemble(u64 addr, char *buf, size_t bufsz) {
+u64 core_or::disassemble(u64 addr, char *buf, size_t bufsz) {
 
-    ERROR_ON(addr > UINT32_MAX, "code address %llu out of bounds", addr);
+    ERROR_ON(addr > UINT32_MAX, "code address %llu out of bounds", (long long unsigned)addr);
 
     u64 paddr = 0;
     if (!virt_to_phys(addr, paddr))
         return 0;
 
     u32 insn = 0;
-    ocx::transaction tx = {
+    transaction tx = {
         .addr = paddr,
         .size = 4,
         .data = (u8 *)&insn,
+        .space = 0,
+        .cpuid = 0,
+        .port = 0,
         .is_read = true,
         .is_user = true,
         .is_secure = false,
         .is_insn = true,
         .is_excl = false,
         .is_lock = false,
-        .is_port = false,
         .is_debug = true
     };
 
-    if (m_env.transport(tx) != ocx::RESP_OK)
+    if (m_env.transport(tx) != RESP_OK)
         return 0;
 
     std::ostringstream os;
@@ -437,15 +482,81 @@ core_or::u64 core_or::disassemble(u64 addr, char *buf, size_t bufsz) {
     return 4;
 }
 
-inline or1kiss::response core_or::convert_response(ocx::response resp) {
+    bool core_or::trace_coverage_blocks(bool on) {
+        (void)on;
+        return true;
+    }
+
+    bool core_or::trace_mode_changes(bool on) {
+        (void)on;
+        return true;
+    }
+
+    u64* core_or::register_global_monitor(u64** mon_ptr) {
+        (void)mon_ptr;
+        return NULL;
+    }
+
+    bool core_or::add_reg_breakpoint(u64 regid, bool iswr) {
+        (void)regid;
+        (void)iswr;
+        return true;
+    }
+
+    bool core_or::remove_reg_breakpoint(u64 regid, bool iswr) {
+        (void)regid;
+        (void)iswr;
+        return true;
+    }
+
+    u64 core_or::num_ports() {
+        return 2;
+    }
+
+    port_direction core_or::port_dir(u64 portid) {
+        switch (portid) {
+        case 0:
+            return PORT_OUT;
+        case 1:
+            return PORT_OUT;
+        default:
+            return PORT_UNKNOWN;
+        }
+    }
+
+    const char* core_or::port_name(u64 portid) {
+        switch (portid) {
+        case 0:
+            return "MEM";
+        case 1:
+            return "IO";
+        default:
+            return nullptr;
+        }
+    }
+
+    response core_or::transport(const transaction& tx) {
+        (void)tx;
+        return RESP_OK;
+    }
+
+    void core_or::tb_flush() {
+    }
+
+    void core_or::tb_flush_page(u64 start, u64 end){
+        (void)start;
+        (void)end;
+    }
+
+inline or1kiss::response core_or::convert_response(response resp) {
     switch (resp) {
-    case ocx::RESP_OK:
+    case RESP_OK:
         return or1kiss::RESP_SUCCESS;
 
-    case ocx::RESP_FAILED:
-    case ocx::RESP_NOT_EXCLUSIVE:
-    case ocx::RESP_COMMAND_ERROR:
-    case ocx::RESP_ADDRESS_ERROR:
+    case RESP_FAILED:
+    case RESP_NOT_EXCLUSIVE:
+    case RESP_COMMAND_ERROR:
+    case RESP_ADDRESS_ERROR:
         return or1kiss::RESP_FAILED;
 
     default:
@@ -454,13 +565,13 @@ inline or1kiss::response core_or::convert_response(ocx::response resp) {
     }
 }
 
-namespace ocx {
+namespace ocx20250721::ocx {
 
     core* create_instance(u64 api_version, env& e, const char* variant) {
         UNUSED_PARAMETER(variant);
         if (api_version != OCX_API_VERSION) {
             INFO("OCX_API_VERSION mismatch: requested %llu - "
-                 "expected %llu", api_version, OCX_API_VERSION);
+                 "expected %llu", (long long unsigned)api_version, OCX_API_VERSION);
             return nullptr;
         }
         return new core_or(e);
